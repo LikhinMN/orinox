@@ -1,8 +1,10 @@
 use clap::{Parser, ValueEnum};
 use futures::StreamExt;
+use libp2p::gossipsub;
 use libp2p::swarm::SwarmEvent;
 use libp2p::Multiaddr;
 use libp2p::PeerId;
+use orinox::behaviour::GOSSIPSUB_TOPIC;
 use orinox::identity::get_or_create_identity;
 use orinox::swarm::create_swarm;
 
@@ -50,8 +52,10 @@ async fn main() {
         }
     };
 
-    let peer_id = PeerId::from_public_key(&keypair.public());
-    println!("Local peer id: {peer_id}");
+    let local_peer_id = PeerId::from_public_key(&keypair.public());
+    println!("Local peer id: {local_peer_id}");
+
+    let chat_topic = gossipsub::IdentTopic::new(GOSSIPSUB_TOPIC);
 
     let mut swarm = match create_swarm(&keypair) {
         Ok(swarm) => swarm,
@@ -94,6 +98,24 @@ async fn main() {
         match swarm.next().await {
             Some(SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. }) => {
                 println!("Connection established with {peer_id} via {endpoint:?}");
+
+                let hello_message = format!("Hello from {local_peer_id}");
+                if let Err(e) = swarm
+                    .behaviour_mut()
+                    .publish(chat_topic.clone(), hello_message.as_bytes())
+                {
+                    eprintln!("Failed to publish hello message: {e}");
+                }
+            }
+            Some(SwarmEvent::Behaviour(gossipsub::Event::Message {
+                propagation_source,
+                message_id,
+                message,
+            })) => {
+                let content = String::from_utf8_lossy(&message.data);
+                println!(
+                    "Received gossipsub message {message_id} from {propagation_source}: {content}"
+                );
             }
             Some(SwarmEvent::OutgoingConnectionError { peer_id, error, .. }) => {
                 match peer_id {
