@@ -2,31 +2,39 @@
 
 ## Project Snapshot
 - `orinox` is a single-binary Rust crate (`Cargo.toml`) targeting Rust 2024 edition.
-- Current entrypoint is `src/main.rs`; runtime behavior is centered on local identity bootstrapping.
-- The app currently does not start networking yet: `main()` only calls `get_or_create_identity()`.
+- Current entrypoint is `src/main.rs`; runtime behavior is centered on local identity bootstrapping and libp2p swarm startup.
+- `main()` parses CLI args, initializes identity, starts TCP listening, optionally dials peers, and processes swarm events.
 
 ## Architecture and Data Flow
-- CLI schema is defined with `clap` derive in `Args` and `LogLevel` (`src/main.rs`), but `Args::parse()` is not called yet.
+- CLI schema is defined with `clap` derive in `Args` and `LogLevel` (`src/main.rs`), and `Args::parse()` is called at startup.
 - Identity flow (`get_or_create_identity`):
-  1. Check for `.orinox/` directory in project root.
-  2. If directory exists, check `.orinox/identity.key`.
+  1. Ensure `.orinox/` directory exists in the project root.
+  2. Check `.orinox/identity.key`.
   3. If key exists, read bytes and decode with `libp2p::identity::Keypair::from_protobuf_encoding`.
   4. If key is missing, generate an Ed25519 keypair and persist protobuf bytes.
+- Networking startup flow (`main` + swarm modules):
+  1. Parse `--port`, `--connect`, and `--log-level` via `Args::parse()`.
+  2. Load persisted identity and derive `PeerId`.
+  3. Build swarm with `orinox::swarm::create_swarm`, which composes dummy behaviour + TCP/Noise/Yamux transport.
+  4. Listen on `/ip4/0.0.0.0/tcp/{port}`, dial each `--connect` multiaddr, and handle `SwarmEvent` in an async loop.
 - Local state boundary: `.orinox/identity.key` is the persistent node identity artifact; keep this behavior stable when adding network features.
 
 ## Key Files to Read First
-- `Cargo.toml`: crate metadata + direct deps (`clap`, `libp2p`).
-- `src/main.rs`: CLI model + identity lifecycle logic.
-- `.gitignore`: ignores `target/`, editor files, and `.env`.
+- `Cargo.toml`: crate metadata + direct deps (`clap`, `libp2p`, `tokio`, `futures`) and `tempfile` dev-dependency.
+- `src/main.rs`: CLI parsing + startup orchestration (identity, listen, dial, swarm event loop).
+- `src/identity.rs`: identity key lifecycle and `.orinox/identity.key` persistence format.
+- `src/swarm.rs` and `src/transport.rs`: swarm construction and TCP/Noise/Yamux transport wiring.
+- `tests/identity_lifecycle.rs`: regression coverage for key creation, reload stability, and corrupted-key handling.
+- `.gitignore`: ignores `target/`, editor files, `.env`, `.orinox`, and `.agents`.
 
 ## Developer Workflow (Observed)
 - Build check:
-  - `cargo check` (currently fails on `src/main.rs` type mismatches in key encode/decode handling).
+  - `cargo check` (currently passes).
 - Test run:
-  - `cargo test` (no test modules currently; compile errors in main block test execution).
+  - `cargo test` (currently passes; includes `tests/identity_lifecycle.rs` with 3 tests).
 - CLI/help:
   - `cargo run -- --help` (expected to require successful compile first).
-- Optional quality gates once compile is fixed:
+- Optional quality gates:
   - `cargo fmt --check`
   - `cargo clippy -- -D warnings`
 
@@ -34,16 +42,17 @@
 - Keep identity files under `.orinox/` at repo root; do not silently relocate path logic.
 - Prefer `libp2p::identity::Keypair` protobuf encode/decode APIs for persistence (no custom key format).
 - Preserve Clap derive style (`#[derive(Parser, ValueEnum)]`) when expanding CLI surface.
-- This is a binary-focused codebase right now; if extracting modules, keep `main.rs` orchestration thin and move logic into named functions/modules.
+- Keep `main.rs` orchestration thin: networking composition lives in `src/swarm.rs`, `src/transport.rs`, and `src/behaviour.rs`.
 
 ## Integration Notes
 - External dependencies are minimal and direct:
   - `clap` for argument modeling.
-  - `libp2p` (identity submodule currently used; networking APIs not wired yet).
+  - `libp2p` for identity, TCP transport, Noise auth, Yamux multiplexing, and `Swarm` event processing.
+  - `tokio` for async runtime (`#[tokio::main]`) and `futures` for `StreamExt` over swarm events.
 - Any new P2P behavior should use the existing persisted identity as the node key source rather than generating ephemeral keys per run.
 
 ## Agent Handoff Expectations
 - Before proposing behavior changes, state whether they affect `.orinox/identity.key` lifecycle.
-- When touching startup flow, reference `src/main.rs` and call out compile/run impact.
-- If adding tests, prefer small unit tests around identity path/serialization decisions first.
+- When touching startup flow, reference `src/main.rs`, `src/swarm.rs`, and `src/transport.rs` and call out compile/run impact.
+- If adding tests, follow the existing identity lifecycle pattern in `tests/identity_lifecycle.rs` first.
 
