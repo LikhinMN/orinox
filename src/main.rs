@@ -29,6 +29,14 @@ struct Args {
 
 
 fn main() {
+    let args=Args::parse();
+    let port=args.port;
+    let connect_rul=args.connect.clone();
+    let log_level=args.log_level.clone();
+    println!("Starting orinox with port: {port}");
+    println!("Starting orinox connection urls: {connect_rul:?}");
+    println!("Starting orinox logs: {log_level:?}");
+
     let keypair = match get_or_create_identity() {
         Ok(keypair) => keypair,
         Err(e) => {
@@ -39,4 +47,6 @@ fn main() {
 
     let peer_id = PeerId::from_public_key(&keypair.public());
     println!("Local peer id: {peer_id}");
+
+
 }
