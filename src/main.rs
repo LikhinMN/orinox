@@ -1,8 +1,10 @@
 use clap::{Parser, ValueEnum};
+use futures::StreamExt;
+use libp2p::swarm::SwarmEvent;
+use libp2p::Multiaddr;
 use libp2p::PeerId;
-use orinox::behaviour::create_behaviour;
 use orinox::identity::get_or_create_identity;
-use orinox::transport::build_tcp_transport;
+use orinox::swarm::create_swarm;
 
 #[derive(ValueEnum, Debug, Clone)]
 enum LogLevel {
@@ -30,13 +32,14 @@ struct Args {
 }
 
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args = Args::parse();
     let port = args.port;
-    let connect_rul = args.connect;
+    let connect_urls = args.connect;
     let log_level = args.log_level;
     println!("Starting orinox with port: {port}");
-    println!("Starting orinox connection urls: {connect_rul:?}");
+    println!("Starting orinox connection urls: {connect_urls:?}");
     println!("Starting orinox logs: {log_level:?}");
 
     let keypair = match get_or_create_identity() {
@@ -50,15 +53,67 @@ fn main() {
     let peer_id = PeerId::from_public_key(&keypair.public());
     println!("Local peer id: {peer_id}");
 
-    if let Err(e) = build_tcp_transport(&keypair) {
-        eprintln!("Failed to build TCP transport: {e}");
+    let mut swarm = match create_swarm(&keypair) {
+        Ok(swarm) => swarm,
+        Err(e) => {
+            eprintln!("Failed to create swarm: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let listen_addr: Multiaddr = match format!("/ip4/0.0.0.0/tcp/{port}").parse() {
+        Ok(addr) => addr,
+        Err(e) => {
+            eprintln!("Invalid listen address for port {port}: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if let Err(e) = swarm.listen_on(listen_addr.clone()) {
+        eprintln!("Failed to start listening on {listen_addr}: {e}");
         std::process::exit(1);
     }
+    println!("Swarm listening on {listen_addr}");
 
-    println!("TCP transport initialized");
+    for connect_url in connect_urls {
+        let remote_addr: Multiaddr = match connect_url.parse() {
+            Ok(addr) => addr,
+            Err(e) => {
+                eprintln!("Skipping invalid --connect address '{connect_url}': {e}");
+                continue;
+            }
+        };
 
-    let _behaviour = create_behaviour();
-    println!("Behaviour initialized");
+        println!("Dialing {remote_addr}");
+        if let Err(e) = swarm.dial(remote_addr.clone()) {
+            eprintln!("Failed to dial {remote_addr}: {e}");
+        }
+    }
+
+    loop {
+        match swarm.next().await {
+            Some(SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. }) => {
+                println!("Connection established with {peer_id} via {endpoint:?}");
+            }
+            Some(SwarmEvent::OutgoingConnectionError { peer_id, error, .. }) => {
+                match peer_id {
+                    Some(peer_id) => eprintln!("Outgoing connection error to {peer_id}: {error}"),
+                    None => eprintln!("Outgoing connection error: {error}"),
+                }
+            }
+            Some(SwarmEvent::IncomingConnectionError { send_back_addr, error, .. }) => {
+                eprintln!("Incoming connection error from {send_back_addr}: {error}");
+            }
+            Some(SwarmEvent::NewListenAddr { address, .. }) => {
+                println!("Listening on {address}");
+            }
+            Some(_) => {}
+            None => {
+                eprintln!("Swarm event stream ended");
+                break;
+            }
+        }
+    }
 
 
 }
