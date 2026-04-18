@@ -1,4 +1,6 @@
 use clap::{Parser, ValueEnum};
+use libp2p::PeerId;
+use orinox::identity::get_or_create_identity;
 
 #[derive(ValueEnum, Debug, Clone)]
 enum LogLevel {
@@ -25,6 +27,16 @@ struct Args {
     log_level: LogLevel,
 }
 
+
 fn main() {
-    
+    let keypair = match get_or_create_identity() {
+        Ok(keypair) => keypair,
+        Err(e) => {
+            eprintln!("Failed to initialize identity: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let peer_id = PeerId::from_public_key(&keypair.public());
+    println!("Local peer id: {peer_id}");
 }
