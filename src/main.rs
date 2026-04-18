@@ -1,5 +1,6 @@
 use clap::{Parser, ValueEnum};
 use libp2p::PeerId;
+use orinox::behaviour::create_behaviour;
 use orinox::identity::get_or_create_identity;
 use orinox::transport::build_tcp_transport;
 
@@ -55,6 +56,9 @@ fn main() {
     }
 
     println!("TCP transport initialized");
+
+    let _behaviour = create_behaviour();
+    println!("Behaviour initialized");
 
 
 }
