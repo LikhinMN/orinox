@@ -3,7 +3,7 @@ use libp2p::identity::Keypair;
 use std::io;
 
 pub type OrinoxBehaviour = gossipsub::Behaviour;
-pub const GOSSIPSUB_TOPIC: &str = "orinox-chat";
+pub const GOSSIPSUB_TOPIC: &str = "orinox-global";
 
 pub fn create_behaviour(keypair: &Keypair) -> Result<OrinoxBehaviour, io::Error> {
     let config = gossipsub::ConfigBuilder::default()

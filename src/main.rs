@@ -6,7 +6,7 @@ use libp2p::Multiaddr;
 use libp2p::PeerId;
 use orinox::behaviour::GOSSIPSUB_TOPIC;
 use orinox::identity::get_or_create_identity;
-use orinox::swarm::create_swarm;
+use orinox::swarm::{create_swarm, OrinoxSwarm};
 
 #[derive(ValueEnum, Debug, Clone)]
 enum LogLevel {
@@ -33,6 +33,27 @@ struct Args {
     log_level: LogLevel,
 }
 
+fn try_publish_hello(
+    swarm: &mut OrinoxSwarm,
+    chat_topic: &gossipsub::IdentTopic,
+    hello_message: &str,
+) -> bool {
+    match swarm
+        .behaviour_mut()
+        .publish(chat_topic.clone(), hello_message.as_bytes())
+    {
+        Ok(_) => {
+            println!("Published hello message");
+            true
+        }
+        Err(gossipsub::PublishError::InsufficientPeers) => false,
+        Err(e) => {
+            eprintln!("Failed to publish hello message: {e}");
+            false
+        }
+    }
+}
+
 
 #[tokio::main]
 async fn main() {
@@ -56,6 +77,9 @@ async fn main() {
     println!("Local peer id: {local_peer_id}");
 
     let chat_topic = gossipsub::IdentTopic::new(GOSSIPSUB_TOPIC);
+    let chat_topic_hash = chat_topic.hash();
+    let hello_message = format!("Hello from {local_peer_id}");
+    let mut hello_published = false;
 
     let mut swarm = match create_swarm(&keypair) {
         Ok(swarm) => swarm,
@@ -98,24 +122,24 @@ async fn main() {
         match swarm.next().await {
             Some(SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. }) => {
                 println!("Connection established with {peer_id} via {endpoint:?}");
-
-                let hello_message = format!("Hello from {local_peer_id}");
-                if let Err(e) = swarm
-                    .behaviour_mut()
-                    .publish(chat_topic.clone(), hello_message.as_bytes())
-                {
-                    eprintln!("Failed to publish hello message: {e}");
+            }
+            Some(SwarmEvent::Behaviour(gossipsub::Event::Subscribed { peer_id, topic })) => {
+                println!("Peer {peer_id} subscribed to {topic}");
+                if !hello_published && topic == chat_topic_hash {
+                    hello_published = try_publish_hello(&mut swarm, &chat_topic, &hello_message);
                 }
             }
             Some(SwarmEvent::Behaviour(gossipsub::Event::Message {
                 propagation_source,
-                message_id,
                 message,
+                ..
             })) => {
+                let sender = message
+                    .source
+                    .map(|peer_id| peer_id.to_string())
+                    .unwrap_or_else(|| propagation_source.to_string());
                 let content = String::from_utf8_lossy(&message.data);
-                println!(
-                    "Received gossipsub message {message_id} from {propagation_source}: {content}"
-                );
+                println!("Received from {sender}: {content}");
             }
             Some(SwarmEvent::OutgoingConnectionError { peer_id, error, .. }) => {
                 match peer_id {
