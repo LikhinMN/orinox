@@ -24,22 +24,22 @@ enum LogLevel {
 }
 
 #[derive(Parser, Debug)]
-#[command(version, about = "Orinox - P2P Networking Engine", long_about = None)]
+#[command(version, about = "Orinox - Decentralized P2P Chat", long_about = None)]
 struct Args {
-    /// Port to listen on
-    #[arg(short, long)]
+    /// Port to listen on (default: 9000)
+    #[arg(short, long, default_value_t = 9000, value_name = "PORT")]
     port: u16,
 
-    /// Peer addresses to connect to (multiaddr format)
-    #[arg(short, long)]
+    /// Connect to peer (e.g., /ip4/127.0.0.1/tcp/9001)
+    #[arg(short, long, value_name = "ADDR")]
     connect: Vec<String>,
 
-    /// Logging level
-    #[arg(short = 'l', long, value_enum, default_value_t = LogLevel::Info)]
+    /// Logging level [error, warn, info, debug, trace]
+    #[arg(short = 'l', long, value_enum, default_value_t = LogLevel::Info, value_name = "LEVEL")]
     log_level: LogLevel,
 
-    /// Username to display in chat
-    #[arg(long)]
+    /// Username displayed in chat (default: auto-generated)
+    #[arg(short = 'n', long, value_name = "NAME")]
     name: Option<String>,
 }
 
