@@ -1931,6 +1931,8 @@ dependencies = [
  "clap",
  "futures",
  "libp2p",
+ "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing-subscriber",

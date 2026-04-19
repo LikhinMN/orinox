@@ -9,6 +9,8 @@ libp2p = { version = "0.54", features = ["tcp", "noise", "yamux", "tokio", "goss
 tokio = { version = "1.0", features = ["full"] }
 futures = "0.3"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 [dev-dependencies]
 tempfile = "3.13.0"

@@ -7,14 +7,12 @@ use libp2p::swarm::SwarmEvent;
 use orinox::behaviour::GOSSIPSUB_TOPIC;
 use orinox::identity::get_or_create_identity;
 use orinox::swarm::{OrinoxSwarm, create_swarm};
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::collections::HashMap;
+use std::io::Write;
 use tokio::io::{self, AsyncBufReadExt, BufReader};
 use tokio::time::{self, Duration, MissedTickBehavior};
 use tracing_subscriber::EnvFilter;
-
-const MSG_PREFIX: &str = "MSG|";
-const NAME_PREFIX: &str = "NAME|";
 
 #[derive(ValueEnum, Debug, Clone)]
 enum LogLevel {
@@ -39,40 +37,43 @@ struct Args {
     /// Logging level
     #[arg(short = 'l', long, value_enum, default_value_t = LogLevel::Info)]
     log_level: LogLevel,
+
+    /// Username to display in chat
+    #[arg(long)]
+    name: Option<String>,
 }
 
-fn encode_chat_message(name: &str, message: &str) -> String {
-    format!("{MSG_PREFIX}{name}|{message}")
+#[derive(Debug, Serialize, Deserialize)]
+struct ChatMessage {
+    username: String,
+    message: String,
 }
 
-fn encode_name_update(name: &str) -> String {
-    format!("{NAME_PREFIX}{name}")
-}
-
-fn parse_incoming_message(raw: &[u8]) -> Option<(Option<String>, String)> {
-    let text = String::from_utf8_lossy(raw);
-    if let Some(rest) = text.strip_prefix(MSG_PREFIX) {
-        let mut parts = rest.splitn(2, '|');
-        let name = parts.next().unwrap_or("unknown").to_string();
-        let message = parts.next().unwrap_or("").to_string();
-        return Some((Some(name), message));
-    }
-
-    if let Some(rest) = text.strip_prefix(NAME_PREFIX) {
-        return Some((None, rest.to_string()));
-    }
-
-    Some((Some("peer".to_string()), text.to_string()))
+struct PendingMessage {
+    payload: String,
+    display: String,
 }
 
 fn format_peer_name(peer_id: &PeerId) -> String {
     let peer_text = peer_id.to_string();
     let short = peer_text.chars().take(8).collect::<String>();
-    format!("peer-{short}")
+    format!("user_{short}")
+}
+
+fn build_chat_payload(username: &str, message: &str) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&ChatMessage {
+        username: username.to_string(),
+        message: message.to_string(),
+    })
 }
 
 fn print_system(message: &str) {
     println!("[system] {message}");
+}
+
+fn print_prompt() {
+    print!("> ");
+    let _ = std::io::stdout().flush();
 }
 
 fn try_publish_hello(
@@ -99,7 +100,7 @@ fn try_publish_hello(
 fn try_flush_pending_messages(
     swarm: &mut OrinoxSwarm,
     chat_topic: &gossipsub::IdentTopic,
-    pending_messages: &mut VecDeque<String>,
+    pending_messages: &mut VecDeque<PendingMessage>,
 ) {
     let pending_count = pending_messages.len();
     for _ in 0..pending_count {
@@ -109,9 +110,9 @@ fn try_flush_pending_messages(
 
         match swarm
             .behaviour_mut()
-            .publish(chat_topic.clone(), message.as_bytes().to_vec())
+            .publish(chat_topic.clone(), message.payload.as_bytes().to_vec())
         {
-            Ok(_) => println!("[you]: {message} (sent)"),
+            Ok(_) => println!("[you]: {} (sent)", message.display),
             Err(gossipsub::PublishError::InsufficientPeers) => {
                 pending_messages.push_front(message);
                 break;
@@ -145,6 +146,7 @@ async fn main() {
     let port = args.port;
     let connect_urls = args.connect;
     let log_level = args.log_level;
+    let requested_name = args.name;
     init_logging(&log_level);
     println!("Starting orinox with port: {port}");
     println!("Starting orinox connection urls: {connect_urls:?}");
@@ -163,11 +165,19 @@ async fn main() {
 
     let chat_topic = gossipsub::IdentTopic::new(GOSSIPSUB_TOPIC);
     let chat_topic_hash = chat_topic.hash();
-    let mut local_name = format_peer_name(&local_peer_id);
-    let hello_message = encode_chat_message(&local_name, &format!("Hello from {local_name}"));
+    let mut local_username = requested_name.unwrap_or_else(|| format_peer_name(&local_peer_id));
+    let hello_payload = match build_chat_payload(
+        &local_username,
+        &format!("Hello from {local_username}"),
+    ) {
+        Ok(payload) => payload,
+        Err(e) => {
+            eprintln!("Failed to build hello payload: {e}");
+            std::process::exit(1);
+        }
+    };
     let mut hello_published = false;
     let mut pending_messages = VecDeque::new();
-    let mut peer_names: HashMap<PeerId, String> = HashMap::new();
 
     let mut swarm = match create_swarm(&keypair) {
         Ok(swarm) => swarm,
@@ -214,6 +224,7 @@ async fn main() {
     print_system(&format!(
         "Type a message and press Enter to publish to {GOSSIPSUB_TOPIC} (commands: /name, /peers, /exit)"
     ));
+    print_prompt();
 
     loop {
         tokio::select! {
@@ -221,17 +232,15 @@ async fn main() {
                 match event {
                     SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
                         print_system(&format!("Connection established with {peer_id} via {endpoint:?}"));
-                        peer_names.entry(peer_id).or_insert_with(|| format_peer_name(&peer_id));
                     }
                     SwarmEvent::ConnectionClosed { peer_id, .. } => {
                         print_system(&format!("Connection closed with {peer_id}"));
-                        peer_names.remove(&peer_id);
                     }
                     SwarmEvent::Behaviour(gossipsub::Event::Subscribed { peer_id, topic }) => {
                         print_system(&format!("Peer {peer_id} subscribed to {topic}"));
                         if topic == chat_topic_hash {
                             if !hello_published {
-                                hello_published = try_publish_hello(&mut swarm, &chat_topic, &hello_message);
+                                hello_published = try_publish_hello(&mut swarm, &chat_topic, &hello_payload);
                             }
                         }
                     }
@@ -240,30 +249,21 @@ async fn main() {
                         message,
                         ..
                     }) => {
-                        if message.source.as_ref() == Some(&local_peer_id) {
+                        let sender = message.source.unwrap_or(propagation_source);
+                        if sender == local_peer_id {
                             continue;
                         }
 
-                        let sender = message
-                            .source
-                            .unwrap_or(propagation_source);
-
-                        match parse_incoming_message(&message.data) {
-                            Some((Some(name), content)) => {
-                                peer_names.insert(sender, name.clone());
-                                if !content.is_empty() {
-                                    println!("[{name}]: {content}");
-                                }
+                        match serde_json::from_slice::<ChatMessage>(&message.data) {
+                            Ok(chat) => {
+                                println!("[{}]: {}", chat.username, chat.message);
                             }
-                            Some((None, name)) => {
-                                if !name.is_empty() {
-                                    peer_names.insert(sender, name.clone());
-                                    print_system(&format!("{sender} is now known as {name}"));
-                                }
+                            Err(_) => {
+                                let fallback = String::from_utf8_lossy(&message.data);
+                                println!("[{sender}]: {fallback}");
                             }
-                            None => {}
-                        }
-                    }
+                         }
+                     }
                     SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                         match peer_id {
                             Some(peer_id) => eprintln!("Outgoing connection error to {peer_id}: {error}"),
@@ -280,12 +280,16 @@ async fn main() {
                 }
 
                 try_flush_pending_messages(&mut swarm, &chat_topic, &mut pending_messages);
+                if !stdin_closed {
+                    print_prompt();
+                }
             }
             line_result = stdin_lines.next_line(), if !stdin_closed => {
                 match line_result {
                     Ok(Some(line)) => {
                         let text = line.trim();
                         if text.is_empty() {
+                            print_prompt();
                             continue;
                         }
 
@@ -298,36 +302,33 @@ async fn main() {
                             let new_name = new_name.trim();
                             if new_name.is_empty() {
                                 print_system("Usage: /name <your_name>");
+                                print_prompt();
                                 continue;
                             }
 
-                            local_name = new_name.to_string();
-                            print_system(&format!("Your name is now {local_name}"));
-                            let update = encode_name_update(&local_name);
-                            if let Err(e) = swarm
-                                .behaviour_mut()
-                                .publish(chat_topic.clone(), update.as_bytes().to_vec())
-                            {
-                                eprintln!("Failed to publish name update: {e}");
-                            }
-                            continue;
+                            local_username = new_name.to_string();
+                            print_system(&format!("Username changed to {local_username}"));
+                            print_prompt();
+                             continue;
                         }
 
                         if text == "/peers" {
-                            let peers: Vec<String> = swarm
-                                .connected_peers()
-                                .map(|peer_id| {
-                                    peer_names
-                                        .get(peer_id)
-                                        .cloned()
-                                        .unwrap_or_else(|| format_peer_name(peer_id))
-                                })
-                                .collect();
-                            print_system(&format!("Connected peers: {}", peers.join(", ")));
-                            continue;
+                            print_system("Connected peers:");
+                            for peer_id in swarm.connected_peers() {
+                                println!("- {peer_id}");
+                            }
+                            print_prompt();
+                             continue;
                         }
 
-                        let payload = encode_chat_message(&local_name, text);
+                        let payload = match build_chat_payload(&local_username, text) {
+                            Ok(payload) => payload,
+                            Err(e) => {
+                                eprintln!("Failed to serialize message: {e}");
+                                print_prompt();
+                                continue;
+                            }
+                        };
                         match swarm
                             .behaviour_mut()
                             .publish(chat_topic.clone(), payload.as_bytes().to_vec())
@@ -335,10 +336,14 @@ async fn main() {
                             Ok(_) => println!("[you]: {text}"),
                             Err(gossipsub::PublishError::InsufficientPeers) => {
                                 eprintln!("Waiting for peers to join... Message queued.");
-                                pending_messages.push_back(payload);
+                                pending_messages.push_back(PendingMessage {
+                                    payload,
+                                    display: text.to_string(),
+                                });
                             }
                             Err(e) => eprintln!("Failed to publish message: {e}"),
                         }
+                        print_prompt();
                     }
                     Ok(None) => {
                         stdin_closed = true;
@@ -346,11 +351,15 @@ async fn main() {
                     }
                     Err(e) => {
                         eprintln!("Failed to read input: {e}");
+                        print_prompt();
                     }
                 }
             }
             _ = retry_interval.tick(), if !pending_messages.is_empty() => {
                 try_flush_pending_messages(&mut swarm, &chat_topic, &mut pending_messages);
+                if !stdin_closed {
+                    print_prompt();
+                }
             }
         }
     }
