@@ -23,4 +23,3 @@ pub fn create_behaviour(keypair: &Keypair) -> Result<OrinoxBehaviour, io::Error>
 
     Ok(behaviour)
 }
-

@@ -27,4 +27,3 @@ pub fn get_or_create_identity_at(base_path: &Path) -> Result<Keypair, io::Error>
         Err(e) => Err(e),
     }
 }
-

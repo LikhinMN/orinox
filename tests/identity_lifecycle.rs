@@ -48,4 +48,3 @@ fn returns_invalid_data_for_corrupted_identity_file() {
 
     assert_eq!(err.kind(), io::ErrorKind::InvalidData);
 }
-

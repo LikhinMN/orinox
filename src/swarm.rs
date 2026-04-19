@@ -1,4 +1,4 @@
-use crate::behaviour::{create_behaviour, OrinoxBehaviour};
+use crate::behaviour::{OrinoxBehaviour, create_behaviour};
 use crate::transport::build_tcp_transport;
 use libp2p::swarm::{Config, Swarm};
 use std::io;
@@ -17,4 +17,3 @@ pub fn create_swarm(keypair: &libp2p::identity::Keypair) -> Result<OrinoxSwarm, 
         Config::with_tokio_executor(),
     ))
 }
-
