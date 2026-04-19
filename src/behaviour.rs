@@ -6,7 +6,14 @@ pub type OrinoxBehaviour = gossipsub::Behaviour;
 pub const GOSSIPSUB_TOPIC: &str = "orinox-global";
 
 pub fn create_behaviour(keypair: &Keypair) -> Result<OrinoxBehaviour, io::Error> {
+    let message_id_fn = |message: &gossipsub::Message| {
+        gossipsub::MessageId::from(String::from_utf8_lossy(&message.data).to_string())
+    };
+
     let config = gossipsub::ConfigBuilder::default()
+        .validation_mode(gossipsub::ValidationMode::Strict)
+        .message_id_fn(message_id_fn)
+        .protocol_id_prefix("/orinox")
         .build()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 

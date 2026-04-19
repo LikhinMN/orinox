@@ -7,7 +7,10 @@ use libp2p::swarm::SwarmEvent;
 use orinox::behaviour::GOSSIPSUB_TOPIC;
 use orinox::identity::get_or_create_identity;
 use orinox::swarm::{OrinoxSwarm, create_swarm};
+use std::collections::VecDeque;
 use tokio::io::{self, AsyncBufReadExt, BufReader};
+use tokio::time::{self, Duration, MissedTickBehavior};
+use tracing_subscriber::EnvFilter;
 
 #[derive(ValueEnum, Debug, Clone)]
 enum LogLevel {
@@ -55,12 +58,56 @@ fn try_publish_hello(
     }
 }
 
+fn try_flush_pending_messages(
+    swarm: &mut OrinoxSwarm,
+    chat_topic: &gossipsub::IdentTopic,
+    pending_messages: &mut VecDeque<String>,
+) {
+    let pending_count = pending_messages.len();
+    for _ in 0..pending_count {
+        let Some(message) = pending_messages.pop_front() else {
+            break;
+        };
+
+        match swarm
+            .behaviour_mut()
+            .publish(chat_topic.clone(), message.as_bytes().to_vec())
+        {
+            Ok(_) => println!("[You]: {message} (sent)"),
+            Err(gossipsub::PublishError::InsufficientPeers) => {
+                pending_messages.push_front(message);
+                break;
+            }
+            Err(e) => eprintln!("Failed to publish queued message: {e}"),
+        }
+    }
+}
+
+fn init_logging(log_level: &LogLevel) {
+    let filter = match std::env::var("RUST_LOG") {
+        Ok(value) => EnvFilter::new(value),
+        Err(_) => {
+            let level = match log_level {
+                LogLevel::Error => "error",
+                LogLevel::Warn => "warn",
+                LogLevel::Info => "info",
+                LogLevel::Debug => "debug",
+                LogLevel::Trace => "trace",
+            };
+            EnvFilter::new(format!("orinox={level},libp2p={level}"))
+        }
+    };
+
+    tracing_subscriber::fmt().with_env_filter(filter).init();
+}
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
     let port = args.port;
     let connect_urls = args.connect;
     let log_level = args.log_level;
+    init_logging(&log_level);
     println!("Starting orinox with port: {port}");
     println!("Starting orinox connection urls: {connect_urls:?}");
     println!("Starting orinox logs: {log_level:?}");
@@ -80,6 +127,7 @@ async fn main() {
     let chat_topic_hash = chat_topic.hash();
     let hello_message = format!("Hello from {local_peer_id}");
     let mut hello_published = false;
+    let mut pending_messages = VecDeque::new();
 
     let mut swarm = match create_swarm(&keypair) {
         Ok(swarm) => swarm,
@@ -121,6 +169,8 @@ async fn main() {
     let stdin = io::stdin();
     let mut stdin_lines = BufReader::new(stdin).lines();
     let mut stdin_closed = false;
+    let mut retry_interval = time::interval(Duration::from_millis(500));
+    retry_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     println!("Type a message and press Enter to publish to {GOSSIPSUB_TOPIC}");
 
     loop {
@@ -130,10 +180,15 @@ async fn main() {
                     SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
                         println!("Connection established with {peer_id} via {endpoint:?}");
                     }
+                    SwarmEvent::ConnectionClosed { peer_id, .. } => {
+                        println!("Connection closed with {peer_id}");
+                    }
                     SwarmEvent::Behaviour(gossipsub::Event::Subscribed { peer_id, topic }) => {
                         println!("Peer {peer_id} subscribed to {topic}");
-                        if !hello_published && topic == chat_topic_hash {
-                            hello_published = try_publish_hello(&mut swarm, &chat_topic, &hello_message);
+                        if topic == chat_topic_hash {
+                            if !hello_published {
+                                hello_published = try_publish_hello(&mut swarm, &chat_topic, &hello_message);
+                            }
                         }
                     }
                     SwarmEvent::Behaviour(gossipsub::Event::Message {
@@ -141,6 +196,10 @@ async fn main() {
                         message,
                         ..
                     }) => {
+                        if message.source.as_ref() == Some(&local_peer_id) {
+                            continue;
+                        }
+
                         let sender = message
                             .source
                             .map(|peer_id| peer_id.to_string())
@@ -162,6 +221,8 @@ async fn main() {
                     }
                     _ => {}
                 }
+
+                try_flush_pending_messages(&mut swarm, &chat_topic, &mut pending_messages);
             }
             line_result = stdin_lines.next_line(), if !stdin_closed => {
                 match line_result {
@@ -177,7 +238,8 @@ async fn main() {
                         {
                             Ok(_) => println!("[You]: {text}"),
                             Err(gossipsub::PublishError::InsufficientPeers) => {
-                                eprintln!("Failed to publish message: insufficient peers in mesh");
+                                eprintln!("Waiting for peers to join... Message queued.");
+                                pending_messages.push_back(text.to_owned());
                             }
                             Err(e) => eprintln!("Failed to publish message: {e}"),
                         }
@@ -190,6 +252,9 @@ async fn main() {
                         eprintln!("Failed to read input: {e}");
                     }
                 }
+            }
+            _ = retry_interval.tick(), if !pending_messages.is_empty() => {
+                try_flush_pending_messages(&mut swarm, &chat_topic, &mut pending_messages);
             }
         }
     }

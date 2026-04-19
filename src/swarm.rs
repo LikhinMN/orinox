@@ -2,6 +2,7 @@ use crate::behaviour::{OrinoxBehaviour, create_behaviour};
 use crate::transport::build_tcp_transport;
 use libp2p::swarm::{Config, Swarm};
 use std::io;
+use std::time::Duration;
 
 pub type OrinoxSwarm = Swarm<OrinoxBehaviour>;
 
@@ -14,6 +15,6 @@ pub fn create_swarm(keypair: &libp2p::identity::Keypair) -> Result<OrinoxSwarm, 
         transport,
         behaviour,
         peer_id,
-        Config::with_tokio_executor(),
+        Config::with_tokio_executor().with_idle_connection_timeout(Duration::from_secs(60 * 60)),
     ))
 }
