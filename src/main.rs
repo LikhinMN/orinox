@@ -24,9 +24,14 @@ enum LogLevel {
 }
 
 #[derive(Parser, Debug)]
-#[command(version, about = "Orinox - Decentralized P2P Chat", long_about = None)]
+#[command(
+    version,
+    about = "Orinox - Decentralized P2P Chat",
+    propagate_version = true,
+    long_about = None
+)]
 struct Args {
-    /// Port to listen on (default: 9000)
+    /// Port to listen on
     #[arg(short, long, default_value_t = 9000, value_name = "PORT")]
     port: u16,
 
@@ -34,7 +39,7 @@ struct Args {
     #[arg(short, long, value_name = "ADDR")]
     connect: Vec<String>,
 
-    /// Logging level [error, warn, info, debug, trace]
+    /// Logging level
     #[arg(short = 'l', long, value_enum, default_value_t = LogLevel::Info, value_name = "LEVEL")]
     log_level: LogLevel,
 
